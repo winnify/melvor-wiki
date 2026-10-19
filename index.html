@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Melvor Wiki</title>
+
+<style>
+  /* ---------- 1. LOOK ---------- */
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1b1f24;
+    --muted: #5d6673;
+    --accent: #c0392b;
+    --border: #dde1e6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171b;
+      --card: #1e2227;
+      --text: #e8eaed;
+      --muted: #9aa3ad;
+      --accent: #ff7a6b;
+      --border: #2d333b;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.45 system-ui, sans-serif;
+  }
+  [hidden] { display: none !important; }   /* makes the "hidden" attribute always win */
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 12px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  h1 { margin: 0 0 8px; font-size: 18px; }
+
+  input {
+    width: 100%;
+    padding: 12px 14px;
+    font-size: 16px;
+    color: var(--text);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+
+  main { padding: 12px 16px 32px; }
+
+  .result {
+    display: block;
+    margin-bottom: 10px;
+    padding: 12px 14px;
+    color: inherit;
+    text-decoration: none;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .result:active { border-color: var(--accent); }
+  .result h2 { margin: 0 0 4px; font-size: 16px; color: var(--accent); }
+  .result p  { margin: 0; font-size: 14px; color: var(--muted); }
+
+  .status { padding: 24px 4px; text-align: center; color: var(--muted); }
+
+  /* Article screen: top bar with a back button */
+  .bar {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .bar button {
+    flex: none;
+    min-width: 44px;             /* 44px is a comfortable minimum for a finger tap */
+    min-height: 44px;
+    font-size: 20px;
+    color: var(--accent);
+    background: none;
+    border: none;
+  }
+  .bar strong {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Debug panel (opened by the </> button) */
+  #debug-out {
+    margin: 0;
+    padding: 12px 16px;
+    max-height: 50vh;
+    overflow: auto;
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--text);
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+  }
+  .bar #debug { margin-left: auto; font-size: 14px; color: var(--muted); }
+
+  /* Wiki content: the wiki's own HTML gets these basic rules so it fits a phone */
+  /* "break-word" only splits a word when it can't fit on its own line.
+     (The earlier "anywhere" let table cells shrink until words broke letter by letter.) */
+  #article-body { line-height: 1.55; overflow-wrap: break-word; }
+  #article-body a { color: var(--accent); }
+  #article-body img { max-width: 100%; height: auto; }
+  #article-body h2, #article-body h3 { margin-top: 1.4em; border-bottom: 1px solid var(--border); }
+  #article-body [style*="float"] { float: none !important; }   /* no side-by-side layouts on a phone */
+  #article-body [style*="width"] { max-width: 100%; }
+  #article-body div, #article-body figure { max-width: 100%; }   /* boxes can't be wider than the screen */
+  .table-wrap { overflow-x: auto; margin: 12px 0; }              /* wide tables scroll sideways */
+  #article-body table { border-collapse: collapse; }
+  #article-body th, #article-body td {
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    overflow-wrap: normal;       /* never split words inside table cells */
+    word-break: normal;
+    min-width: 3em;              /* keeps narrow columns readable; the wrapper scrolls if the table is wider than the screen */
+  }
+  #article-body .mw-editsection, #article-body .noprint { display: none; }
+</style>
+</head>
+
+<body>
+
+<!-- SCREEN 1: search -->
+<section id="search-view">
+  <header>
+    <h1>Melvor Wiki</h1>
+    <input id="q" type="search" placeholder="Search items, skills, monsters…"
+           autocomplete="off" enterkeyhint="search">
+  </header>
+  <main id="results">
+    <div class="status">Type to search the wiki.</div>
+  </main>
+</section>
+
+<!-- SCREEN 2: reading an article (hidden until you open one) -->
+<section id="article-view" hidden>
+  <div class="bar">
+    <button id="back" aria-label="Back">←</button>
+    <strong id="article-title"></strong>
+    <button id="debug" aria-label="Show debug info">&lt;/&gt;</button>
+  </div>
+  <pre id="debug-out" hidden></pre>
+  <main id="article-body"></main>
+</section>
+
+<script>
+  // ---------- 2. SETTINGS ----------
+  const API_CANDIDATES = [
+    "https://wiki.melvoridle.com/api.php",
+    "https://wiki.melvoridle.com/w/api.php",
+  ];
+  const ORIGIN    = "https://wiki.melvoridle.com";
+  const PAGE_PATH = "/w/";                 // article addresses look like /w/Title
+
+  const input       = document.getElementById("q");
+  const results     = document.getElementById("results");
+  const searchView  = document.getElementById("search-view");
+  const articleView = document.getElementById("article-view");
+  const articleBody = document.getElementById("article-body");
+  const articleTitle = document.getElementById("article-title");
+
+  let workingApi = null;
+  let latestRequest = 0;
+
+  // ---------- 3. TALKING TO THE WIKI ----------
+  // One helper for every question we ask, so search and reading share it.
+  async function apiGet(extraParams) {
+    const params = new URLSearchParams({ format: "json", formatversion: "2", origin: "*", ...extraParams });
+    const bases = workingApi ? [workingApi] : API_CANDIDATES;
+    let lastError;
+
+    for (const base of bases) {
+      try {
+        const res = await fetch(`${base}?${params}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}`);
+        const data = await res.json();
+        if (!data.query && !data.parse && !data.error) throw new Error(`Unexpected reply from ${base}`);
+        workingApi = base;
+        return data;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError;
+  }
+
+  async function searchWiki(term) {
+    const data = await apiGet({
+      action: "query", list: "search", srsearch: term, srlimit: "20", srprop: "snippet",
+    });
+    return data.query.search;
+  }
+
+  async function fetchArticle(title) {
+    const data = await apiGet({
+      action: "parse", page: title, prop: "text", redirects: "1",
+      disableeditsection: "1", disablelimitreport: "1",
+    });
+    if (data.error) throw new Error(data.error.info || data.error.code);
+    return data.parse;    // { title, text } where text is the article as HTML
+  }
+
+  function toPlainText(html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    return doc.body.textContent || "";
+  }
+
+  // ---------- 4. MAKING WIKI HTML SAFE AND PHONE-READY ----------
+  // The wiki sends the article as HTML. We never paste it in untouched:
+  // we clean it first, then fix addresses so images and links still work.
+  function cleanArticleHtml(html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    // 1. Remove anything that can run code or break the layout.
+    // <noscript> is for browsers without JavaScript. Wikis that load images lazily put the
+    // real <img> inside it, so keep those: swap the wrapper for its contents.
+    // (The wrapper must go: once on the page, a browser with JavaScript shows <noscript> content as plain text.)
+    doc.querySelectorAll("noscript").forEach(ns => {
+      if (ns.querySelector("img")) ns.replaceWith(...ns.childNodes);
+      else ns.remove();
+    });
+
+    doc.querySelectorAll("script, style, link, iframe, object, embed, form").forEach(n => n.remove());
+
+    doc.querySelectorAll("*").forEach(el => {
+      // 2. Remove inline event handlers (onclick="…" and similar).
+      for (const attr of [...el.attributes]) {
+        if (attr.name.startsWith("on")) el.removeAttribute(attr.name);
+      }
+      // 3. Remove javascript: links.
+      if (el.tagName === "A" && /^\s*javascript:/i.test(el.getAttribute("href") || "")) {
+        el.removeAttribute("href");
+      }
+    });
+
+    // 4. Images: the wiki uses addresses like /images/x.png. Make them full addresses.
+    doc.querySelectorAll("img").forEach(img => {
+      // Some wikis load images lazily: "src" holds a tiny placeholder and the real
+      // address sits in "data-src". Swap the real one in.
+      const lazySrc = img.getAttribute("data-src") || img.getAttribute("data-lazy-src");
+      const currentSrc = img.getAttribute("src") || "";
+      if (lazySrc && (!currentSrc || currentSrc.startsWith("data:"))) img.setAttribute("src", lazySrc);
+      const lazySrcset = img.getAttribute("data-srcset");
+      if (lazySrcset && !img.getAttribute("srcset")) img.setAttribute("srcset", lazySrcset);
+
+      // Don't send a "referrer": some image servers refuse requests that come from other sites.
+      img.setAttribute("referrerpolicy", "no-referrer");
+
+      const src = img.getAttribute("src");
+      if (src) img.setAttribute("src", new URL(src, ORIGIN).href);
+      const srcset = img.getAttribute("srcset");
+      if (srcset) {
+        img.setAttribute("srcset", srcset.split(",").map(part => {
+          const [url, size] = part.trim().split(/\s+/);
+          return `${new URL(url, ORIGIN).href}${size ? " " + size : ""}`;
+        }).join(", "));
+      }
+      img.loading = "lazy";                  // only load images as you scroll to them
+    });
+
+    // 5. Wrap tables so wide ones scroll sideways instead of breaking the page.
+    doc.querySelectorAll("table").forEach(table => {
+      const wrap = doc.createElement("div");
+      wrap.className = "table-wrap";
+      table.replaceWith(wrap);
+      wrap.append(table);
+    });
+
+    return doc.body.innerHTML;
+  }
+
+  // ---------- 4b. FORMULAS ----------
+  // The wiki writes formulas as [math]…[/math] and expects a script to draw them.
+  // KaTeX is a free library that does that. We only download it when a page has a formula.
+  const KATEX_BASE = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/";
+  let katexPromise = null;
+
+  function loadKatex() {
+    if (katexPromise) return katexPromise;
+    katexPromise = new Promise((resolve, reject) => {
+      const css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = KATEX_BASE + "katex.min.css";
+      document.head.append(css);
+
+      const script = document.createElement("script");
+      script.src = KATEX_BASE + "katex.min.js";
+      script.onload = () => resolve(window.katex);
+      script.onerror = () => { katexPromise = null; reject(new Error("KaTeX failed to load")); };
+      document.head.append(script);
+    });
+    return katexPromise;
+  }
+
+  async function renderMath(root) {
+    if (!root.textContent.includes("[math]")) return;
+    let katex;
+    try { katex = await loadKatex(); } catch { return; }   // offline? leave the raw formula text
+
+    // Collect the text pieces first, then change them (changing while walking breaks the walk).
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) {
+      if (walker.currentNode.nodeValue.includes("[math]")) nodes.push(walker.currentNode);
+    }
+
+    for (const node of nodes) {
+      // split() with a capture group returns: text, formula, text, formula, …
+      const parts = node.nodeValue.split(/\[math\]([\s\S]*?)\[\/math\]/);
+      const fragment = document.createDocumentFragment();
+      parts.forEach((part, i) => {
+        if (i % 2 === 0) {
+          fragment.append(part);                       // normal text
+        } else {
+          const span = document.createElement("span"); // a formula
+          katex.render(part, span, { throwOnError: false });
+          fragment.append(span);
+        }
+      });
+      node.replaceWith(fragment);
+    }
+  }
+
+  // ---------- 4c. DEBUG INFO ----------
+  let lastRawHtml = "";
+  const failedImages = [];     // addresses of images the browser couldn't load
+
+  // Finds page elements that stick out past the right edge of the screen.
+  function wideElements() {
+    const found = [];
+    for (const el of articleBody.querySelectorAll("*")) {
+      if (el.closest(".katex, math, .table-wrap")) continue;   // formulas and scrolling tables are expected to be wide
+      if (el.getBoundingClientRect().right > window.innerWidth + 5) {
+        found.push(el.tagName.toLowerCase() + ": " + el.outerHTML.slice(0, 250));
+        if (found.length >= 3) break;
+      }
+    }
+    return found.join("\n---\n") || "(none)";
+  }
+
+  function debugReport() {
+    const raw = new DOMParser().parseFromString(lastRawHtml, "text/html");
+    const rawImgs = raw.querySelectorAll("img");
+    const cell = raw.querySelector("td a, li a");
+    const cut = (text, n) => (text || "(none)").slice(0, n);
+    return [
+      `API address: ${workingApi}`,
+      `Images in wiki HTML: ${rawImgs.length} (inside noscript: ${raw.querySelectorAll("noscript img").length}) | on screen now: ${articleBody.querySelectorAll("img").length}`,
+      `First image (raw):\n${cut(rawImgs[0] && rawImgs[0].outerHTML, 600)}`,
+      `First link cell (raw):\n${cut(cell && cell.closest("td, li").outerHTML, 900)}`,
+      `Failed images: ${failedImages.length}\n${failedImages.slice(0, 3).join("\n")}`,
+      `First image inside a link (now):\n${cut((articleBody.querySelector("a img") || {}).outerHTML, 500)}`,
+      `Sticking out past the screen edge:\n${wideElements()}`,
+    ].join("\n\n");
+  }
+
+  // ---------- 5. SHOWING THINGS ----------
+  function showStatus(target, message) {
+    target.innerHTML = "";
+    const div = document.createElement("div");
+    div.className = "status";
+    div.textContent = message;
+    target.append(div);
+  }
+
+  function showResults(items) {
+    results.innerHTML = "";
+    for (const item of items) {
+      const link = document.createElement("a");
+      link.className = "result";
+      // "#/wiki/Title" is an address inside our own app. The router (section 6) reads it.
+      link.href = "#/wiki/" + encodeURIComponent(item.title.replaceAll(" ", "_"));
+
+      const title = document.createElement("h2");
+      title.textContent = item.title;
+      const snippet = document.createElement("p");
+      snippet.textContent = toPlainText(item.snippet);
+
+      link.append(title, snippet);
+      results.append(link);
+    }
+  }
+
+  async function runSearch() {
+    const term = input.value.trim();
+    if (!term) return showStatus(results, "Type to search the wiki.");
+
+    const requestId = ++latestRequest;
+    showStatus(results, "Searching…");
+    try {
+      const items = await searchWiki(term);
+      if (requestId !== latestRequest) return;
+      items.length ? showResults(items) : showStatus(results, `No results for “${term}”.`);
+    } catch (err) {
+      if (requestId !== latestRequest) return;
+      showStatus(results, `Couldn't reach the wiki. (${err.message})`);
+    }
+  }
+
+  async function openArticle(title) {
+    searchView.hidden = true;
+    articleView.hidden = false;
+    articleTitle.textContent = title;
+    document.title = title + " – Melvor Wiki";
+    showStatus(articleBody, "Loading…");
+    failedImages.length = 0;                 // start the failed-image list fresh for each page
+    window.scrollTo(0, 0);
+
+    const requestId = ++latestRequest;
+    try {
+      const page = await fetchArticle(title);
+      if (requestId !== latestRequest) return;
+      articleTitle.textContent = page.title;
+      lastRawHtml = page.text;                         // kept for the debug button
+      articleBody.innerHTML = cleanArticleHtml(page.text);
+      renderMath(articleBody);                         // draws any [math] formulas
+    } catch (err) {
+      if (requestId !== latestRequest) return;
+      showStatus(articleBody, `Couldn't load this page. (${err.message})`);
+    }
+  }
+
+  function openSearch() {
+    articleView.hidden = true;
+    searchView.hidden = false;
+    document.title = "Melvor Wiki";
+  }
+
+  // ---------- 6. THE ROUTER ----------
+  // The part of the address after "#" decides which screen you see.
+  // This also makes your phone's Back gesture work with no extra code.
+  function route() {
+    const match = location.hash.match(/^#\/wiki\/(.+)$/);
+    if (match) {
+      openArticle(decodeURIComponent(match[1]).replaceAll("_", " "));
+    } else {
+      openSearch();
+    }
+  }
+  window.addEventListener("hashchange", route);
+
+  // ---------- 7. WIRING IT TOGETHER ----------
+  let timer;
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(runSearch, 350);
+  });
+
+  document.getElementById("back").addEventListener("click", () => {
+    // If you arrived from a search, go back to it; if you opened a link directly, go to search.
+    if (history.length > 1) history.back(); else location.hash = "";
+  });
+
+  // The </> button: show or hide the debug panel.
+  document.getElementById("debug").addEventListener("click", () => {
+    const out = document.getElementById("debug-out");
+    out.hidden = !out.hidden;
+    if (!out.hidden) out.textContent = debugReport();
+  });
+
+  // If an image fails to load, show a small label with its address instead of silently leaving a gap.
+  // "true" at the end means "listen during the capture phase", needed because image errors don't bubble.
+  articleBody.addEventListener("error", (event) => {
+    const img = event.target;
+    if (img.tagName !== "IMG" || img.dataset.failed) return;
+    img.dataset.failed = "1";
+    failedImages.push(img.getAttribute("src") || "(no address)");
+    const note = document.createElement("small");
+    note.style.color = "var(--muted)";
+    note.textContent = `[image failed: ${img.getAttribute("src") || "no address"}]`;
+    img.replaceWith(note);
+  }, true);
+
+  // Taps on links inside an article.
+  articleBody.addEventListener("click", (event) => {
+    const link = event.target.closest("a");
+    if (!link) return;
+    const href = link.getAttribute("href");
+    if (!href) return;
+
+    // Links that jump within the same page (like the contents list).
+    if (href.startsWith("#")) {
+      event.preventDefault();
+      const target = document.getElementById(decodeURIComponent(href.slice(1)));
+      if (target) target.scrollIntoView();
+      return;
+    }
+
+    const url = new URL(href, ORIGIN + PAGE_PATH);
+
+    if (url.origin === ORIGIN && !url.searchParams.has("redlink")) {
+      let title = null;
+      if (url.pathname.startsWith(PAGE_PATH)) {
+        title = decodeURIComponent(url.pathname.slice(PAGE_PATH.length));
+      } else if (url.pathname.endsWith("/index.php") && url.searchParams.has("title")) {
+        title = url.searchParams.get("title");
+      }
+      // Pages with a ":" (File:, Special:, Category: …) aren't plain articles, so open the site instead.
+      if (title && !title.includes(":")) {
+        event.preventDefault();
+        location.hash = "#/wiki/" + encodeURIComponent(title.replaceAll(" ", "_"));
+        return;
+      }
+    }
+
+    // Anything else opens in a new tab.
+    event.preventDefault();
+    window.open(url.href, "_blank", "noopener");
+  });
+
+  route();   // show the right screen when the app first opens
+</script>
+</body>
+</html>
