@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Melvor Wiki</title>
 
+<!-- These make the page installable as an app: a name, icon and colors for the phone to use. -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14171b" media="(prefers-color-scheme: dark)">
+
 <style>
   /* ---------- 1. LOOK ---------- */
   :root {
@@ -43,7 +50,15 @@
     background: var(--bg);
     border-bottom: 1px solid var(--border);
   }
-  h1 { margin: 0 0 8px; font-size: 18px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  h1 { margin: 0; font-size: 18px; }
+  .text-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    color: var(--accent);
+    text-decoration: none;
+  }
 
   input {
     width: 100%;
@@ -74,14 +89,38 @@
 
   .status { padding: 24px 4px; text-align: center; color: var(--muted); }
 
-  /* Article screen: top bar with a back button */
+  /* History rows: a link, plus an optional remove button */
+  .section-title { margin: 8px 0 10px; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .list-item {
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .list-item a { flex: 1; min-width: 0; padding: 12px 14px; color: inherit; text-decoration: none; }
+  .list-item a:active { color: var(--accent); }
+  .list-item h2 { margin: 0 0 2px; font-size: 16px; color: var(--accent); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .list-item p  { margin: 0; font-size: 13px; color: var(--muted); }
+  .list-item button {
+    flex: none;
+    min-width: 48px;
+    min-height: 48px;
+    font-size: 18px;
+    color: var(--muted);
+    background: none;
+    border: none;
+  }
+
+  /* Top bar on the article and history screens */
   .bar {
     position: sticky;
     top: 0;
     z-index: 1;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
     padding: 8px 12px;
     background: var(--bg);
     border-bottom: 1px solid var(--border);
@@ -96,10 +135,14 @@
     border: none;
   }
   .bar strong {
+    flex: 1;
+    min-width: 0;                /* lets a long title shrink and show "…" instead of pushing buttons off */
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+  .bar #debug, .bar #history-clear { font-size: 14px; }
+  .bar #debug { color: var(--muted); }
 
   /* Debug panel (opened by the </> button) */
   #debug-out {
@@ -114,7 +157,6 @@
     background: var(--card);
     border-bottom: 1px solid var(--border);
   }
-  .bar #debug { margin-left: auto; font-size: 14px; color: var(--muted); }
 
   /* Wiki content: the wiki's own HTML gets these basic rules so it fits a phone */
   /* "break-word" only splits a word when it can't fit on its own line.
@@ -141,16 +183,17 @@
 
 <body>
 
-<!-- SCREEN 1: search -->
+<!-- SCREEN 1: search (also shows what you looked at recently) -->
 <section id="search-view">
   <header>
-    <h1>Melvor Wiki</h1>
+    <div class="row">
+      <h1>Melvor Wiki</h1>
+      <a id="history-link" class="text-link" href="#/history">History</a>
+    </div>
     <input id="q" type="search" placeholder="Search items, skills, monsters…"
            autocomplete="off" enterkeyhint="search">
   </header>
-  <main id="results">
-    <div class="status">Type to search the wiki.</div>
-  </main>
+  <main id="results"></main>
 </section>
 
 <!-- SCREEN 2: reading an article (hidden until you open one) -->
@@ -164,6 +207,16 @@
   <main id="article-body"></main>
 </section>
 
+<!-- SCREEN 3: every page you've opened, newest first -->
+<section id="history-view" hidden>
+  <div class="bar">
+    <button id="history-back" aria-label="Back">←</button>
+    <strong>History</strong>
+    <button id="history-clear">Clear</button>
+  </div>
+  <main id="history-list"></main>
+</section>
+
 <script>
   // ---------- 2. SETTINGS ----------
   const API_CANDIDATES = [
@@ -173,11 +226,12 @@
   const ORIGIN    = "https://wiki.melvoridle.com";
   const PAGE_PATH = "/w/";                 // article addresses look like /w/Title
 
-  const input       = document.getElementById("q");
-  const results     = document.getElementById("results");
-  const searchView  = document.getElementById("search-view");
-  const articleView = document.getElementById("article-view");
-  const articleBody = document.getElementById("article-body");
+  const input        = document.getElementById("q");
+  const results      = document.getElementById("results");
+  const searchView   = document.getElementById("search-view");
+  const articleView  = document.getElementById("article-view");
+  const historyView  = document.getElementById("history-view");
+  const articleBody  = document.getElementById("article-body");
   const articleTitle = document.getElementById("article-title");
 
   let workingApi = null;
@@ -192,7 +246,8 @@
 
     for (const base of bases) {
       try {
-        const res = await fetch(`${base}?${params}`);
+        // The timeout stops the app waiting forever on a bad connection.
+        const res = await fetch(`${base}?${params}`, { signal: AbortSignal.timeout(15000) });
         if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}`);
         const data = await res.json();
         if (!data.query && !data.parse && !data.error) throw new Error(`Unexpected reply from ${base}`);
@@ -293,6 +348,7 @@
   // ---------- 4b. FORMULAS ----------
   // The wiki writes formulas as [math]…[/math] and expects a script to draw them.
   // KaTeX is a free library that does that. We only download it when a page has a formula.
+  // (sw.js keeps a copy after the first download, so formulas still draw if you're offline later.)
   const KATEX_BASE = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/";
   let katexPromise = null;
 
@@ -302,10 +358,12 @@
       const css = document.createElement("link");
       css.rel = "stylesheet";
       css.href = KATEX_BASE + "katex.min.css";
+      css.crossOrigin = "anonymous";         // lets sw.js store a usable copy
       document.head.append(css);
 
       const script = document.createElement("script");
       script.src = KATEX_BASE + "katex.min.js";
+      script.crossOrigin = "anonymous";
       script.onload = () => resolve(window.katex);
       script.onerror = () => { katexPromise = null; reject(new Error("KaTeX failed to load")); };
       document.head.append(script);
@@ -316,7 +374,7 @@
   async function renderMath(root) {
     if (!root.textContent.includes("[math]")) return;
     let katex;
-    try { katex = await loadKatex(); } catch { return; }   // offline? leave the raw formula text
+    try { katex = await loadKatex(); } catch { return; }   // library unavailable? leave the raw formula text
 
     // Collect the text pieces first, then change them (changing while walking breaks the walk).
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -375,6 +433,77 @@
     ].join("\n\n");
   }
 
+  // ---------- 4d. HISTORY ----------
+  // A list of the pages you've opened, newest first, kept in localStorage: a small
+  // key/value store built into the browser. It stays on this phone, in this app only.
+  // Each entry looks like { title: "Oak Logs", time: 1760000000000 }  (time = milliseconds since 1970).
+  const HISTORY_KEY = "melvor-history";
+  const HISTORY_MAX = 200;       // keep the newest 200 so the list never grows without limit
+
+  // localStorage can be blocked (private windows, "clear site data"), so every use is wrapped in try/catch.
+  // If it fails, the app still works; history just isn't remembered.
+  function loadHistory() {
+    try {
+      const list = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+      return Array.isArray(list) ? list.filter(e => e && typeof e.title === "string" && typeof e.time === "number") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveHistory(list) {
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX))); } catch { /* storage blocked or full */ }
+  }
+
+  function addToHistory(title) {
+    // A page appears once, at its latest visit: drop any older entry, then put it first.
+    const list = loadHistory().filter(e => e.title !== title);
+    list.unshift({ title, time: Date.now() });
+    saveHistory(list);
+  }
+
+  function removeFromHistory(title) {
+    saveHistory(loadHistory().filter(e => e.title !== title));
+  }
+
+  // "Today, 1:07 PM" / "Yesterday, 9:30 AM" / "Oct 14, 6:02 PM"
+  function formatWhen(ms) {
+    const date = new Date(ms);
+    const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const daysAgo = Math.round((midnight(new Date()) - midnight(date)) / 86400000);
+    if (daysAgo === 0) return `Today, ${time}`;
+    if (daysAgo === 1) return `Yesterday, ${time}`;
+    return `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+  }
+
+  // One row in a history list: a link to the page, and (on the History screen) an ✕ to remove it.
+  function historyRow(entry, removable) {
+    const row = document.createElement("div");
+    row.className = "list-item";
+
+    const link = document.createElement("a");
+    link.href = "#/wiki/" + encodeURIComponent(entry.title.replaceAll(" ", "_"));
+    const title = document.createElement("h2");
+    title.textContent = entry.title;
+    const when = document.createElement("p");
+    when.textContent = formatWhen(entry.time);
+    link.append(title, when);
+    row.append(link);
+
+    if (removable) {
+      const remove = document.createElement("button");
+      remove.textContent = "✕";
+      remove.setAttribute("aria-label", `Remove ${entry.title} from history`);
+      remove.addEventListener("click", () => {
+        removeFromHistory(entry.title);
+        renderHistory();
+      });
+      row.append(remove);
+    }
+    return row;
+  }
+
   // ---------- 5. SHOWING THINGS ----------
   function showStatus(target, message) {
     target.innerHTML = "";
@@ -382,6 +511,31 @@
     div.className = "status";
     div.textContent = message;
     target.append(div);
+  }
+
+  function showView(name) {
+    searchView.hidden  = name !== "search";
+    articleView.hidden = name !== "article";
+    historyView.hidden = name !== "history";
+  }
+
+  // What the search screen shows before you type: your most recent pages.
+  function showHome() {
+    results.innerHTML = "";
+    const recent = loadHistory().slice(0, 8);
+    if (!recent.length) return showStatus(results, "Type to search the wiki.");
+
+    const title = document.createElement("div");
+    title.className = "section-title";
+    title.textContent = "Recently viewed";
+    results.append(title);
+    recent.forEach(entry => results.append(historyRow(entry, false)));
+
+    const all = document.createElement("a");
+    all.className = "text-link";
+    all.href = "#/history";
+    all.textContent = "See all history";
+    results.append(all);
   }
 
   function showResults(items) {
@@ -404,7 +558,7 @@
 
   async function runSearch() {
     const term = input.value.trim();
-    if (!term) return showStatus(results, "Type to search the wiki.");
+    if (!term) { latestRequest++; return showHome(); }
 
     const requestId = ++latestRequest;
     showStatus(results, "Searching…");
@@ -419,8 +573,7 @@
   }
 
   async function openArticle(title) {
-    searchView.hidden = true;
-    articleView.hidden = false;
+    showView("article");
     articleTitle.textContent = title;
     document.title = title + " – Melvor Wiki";
     showStatus(articleBody, "Loading…");
@@ -435,6 +588,7 @@
       lastRawHtml = page.text;                         // kept for the debug button
       articleBody.innerHTML = cleanArticleHtml(page.text);
       renderMath(articleBody);                         // draws any [math] formulas
+      addToHistory(page.title);                        // only pages that really loaded go in history
     } catch (err) {
       if (requestId !== latestRequest) return;
       showStatus(articleBody, `Couldn't load this page. (${err.message})`);
@@ -442,18 +596,37 @@
   }
 
   function openSearch() {
-    articleView.hidden = true;
-    searchView.hidden = false;
+    showView("search");
     document.title = "Melvor Wiki";
+    if (!input.value.trim()) showHome();     // refresh "Recently viewed" with what you just read
+  }
+
+  function renderHistory() {
+    const list = document.getElementById("history-list");
+    const items = loadHistory();
+    if (!items.length) return showStatus(list, "No history yet. Pages you open will show up here.");
+    list.innerHTML = "";
+    items.forEach(entry => list.append(historyRow(entry, true)));
+  }
+
+  function openHistory() {
+    showView("history");
+    document.title = "History – Melvor Wiki";
+    renderHistory();
   }
 
   // ---------- 6. THE ROUTER ----------
   // The part of the address after "#" decides which screen you see.
   // This also makes your phone's Back gesture work with no extra code.
+  //   (nothing)        search
+  //   #/wiki/Title     an article
+  //   #/history        your history
   function route() {
     const match = location.hash.match(/^#\/wiki\/(.+)$/);
     if (match) {
       openArticle(decodeURIComponent(match[1]).replaceAll("_", " "));
+    } else if (location.hash === "#/history") {
+      openHistory();
     } else {
       openSearch();
     }
@@ -467,9 +640,18 @@
     timer = setTimeout(runSearch, 350);
   });
 
-  document.getElementById("back").addEventListener("click", () => {
-    // If you arrived from a search, go back to it; if you opened a link directly, go to search.
+  function goBack() {
+    // If you arrived from another screen, go back to it; if you opened a link directly, go to search.
     if (history.length > 1) history.back(); else location.hash = "";
+  }
+  document.getElementById("back").addEventListener("click", goBack);
+  document.getElementById("history-back").addEventListener("click", goBack);
+
+  document.getElementById("history-clear").addEventListener("click", () => {
+    if (!loadHistory().length) return;
+    if (!confirm("Clear your whole history?")) return;
+    saveHistory([]);
+    renderHistory();
   });
 
   // The </> button: show or hide the debug panel.
@@ -528,6 +710,12 @@
     event.preventDefault();
     window.open(url.href, "_blank", "noopener");
   });
+
+  // Start the background helper (sw.js) that lets the app open instantly and install on your home screen.
+  // It only works on a real web address (like your github.io one), so failures are ignored.
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
 
   route();   // show the right screen when the app first opens
 </script>
